@@ -91,6 +91,7 @@ struct ChatView::Impl {
 	void set_reply(Snowflake id);
 	void cancel_reply_edit();
 	void update_attach_box();
+	bool paste_attachments();
 	void update_typing_label();
 	void update_header();
 	void update_permissions();
@@ -549,41 +550,14 @@ void ChatView::Impl::build()
 						return TRUE;
 					}
 		}
-		if (ctrl && (ev->keyval == GDK_KEY_v || ev->keyval == GDK_KEY_V)) {
-			GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-			if (gtk_clipboard_wait_is_image_available(cb)) {
-				GdkPixbuf *pb = gtk_clipboard_wait_for_image(cb);
-				if (pb) {
-					gchar *data = nullptr;
-					gsize len = 0;
-					if (gdk_pixbuf_save_to_buffer(pb, &data, &len, "png", nullptr, nullptr)) {
-						UploadFile f;
-						f.data.assign(data, len);
-						f.filename = "image.png";
-						f.content_type = "image/png";
-						d->files.push_back(std::move(f));
-						d->update_attach_box();
-						g_free(data);
-					}
-					g_object_unref(pb);
-					return TRUE;
-				}
-			}
-			if (gtk_clipboard_wait_is_uris_available(cb)) {
-				gchar **uris = gtk_clipboard_wait_for_uris(cb);
-				bool any = false;
-				for (int i = 0; uris && uris[i]; i++)
-					if (gchar *f = g_filename_from_uri(uris[i], nullptr, nullptr)) {
-						d->self->attach_file(f);
-						g_free(f);
-						any = true;
-					}
-				g_strfreev(uris);
-				if (any)
-					return TRUE;
-			}
-		}
+		if ((ctrl && (ev->keyval == GDK_KEY_v || ev->keyval == GDK_KEY_V)) || (shift && ev->keyval == GDK_KEY_Insert))
+			if (d->paste_attachments())
+				return TRUE;
 		return FALSE;
+	}), this);
+	g_signal_connect(composer, "paste-clipboard", CB(+[](GtkTextView *tv, gpointer p) {
+		if (static_cast<Impl *>(p)->paste_attachments())
+			g_signal_stop_emission_by_name(tv, "paste-clipboard");
 	}), this);
 	g_signal_connect(gtk_text_view_get_buffer(composer), "changed", CB(+[](GtkTextBuffer *b, gpointer p) {
 		static_cast<Impl *>(p)->mention_update();
@@ -1700,6 +1674,43 @@ void ChatView::Impl::cancel_reply_edit()
 	editing = 0;
 	reply_to = 0;
 	gtk_widget_hide(reply_bar);
+}
+
+bool ChatView::Impl::paste_attachments()
+{
+			GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+	if (gtk_clipboard_wait_is_image_available(cb)) {
+		GdkPixbuf *pb = gtk_clipboard_wait_for_image(cb);
+		if (pb) {
+			gchar *data = nullptr;
+			gsize len = 0;
+			if (gdk_pixbuf_save_to_buffer(pb, &data, &len, "png", nullptr, nullptr)) {
+				UploadFile f;
+				f.data.assign(data, len);
+				f.filename = "image.png";
+				f.content_type = "image/png";
+				files.push_back(std::move(f));
+				update_attach_box();
+				g_free(data);
+			}
+			g_object_unref(pb);
+			return true;
+		}
+	}
+	if (gtk_clipboard_wait_is_uris_available(cb)) {
+		gchar **uris = gtk_clipboard_wait_for_uris(cb);
+		bool any = false;
+		for (int i = 0; uris && uris[i]; i++)
+			if (gchar *f = g_filename_from_uri(uris[i], nullptr, nullptr)) {
+				self->attach_file(f);
+				g_free(f);
+				any = true;
+			}
+		g_strfreev(uris);
+		if (any)
+			return true;
+	}
+	return false;
 }
 
 void ChatView::Impl::update_attach_box()

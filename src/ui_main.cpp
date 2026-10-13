@@ -24,6 +24,7 @@ std::unordered_set<Snowflake> g_collapsed;  // collapsed categories
 bool g_building = false;
 guint g_toast_timer = 0;
 std::map<Snowflake, std::vector<json>> g_member_items;
+static std::map<Snowflake, std::map<std::string, int64_t>> g_group_counts;
 guint g_member_timer = 0;
 Snowflake g_member_guild = 0, g_member_channel = 0;
 
@@ -661,8 +662,13 @@ void render_member_list()
 					if (Guild *g = g_store.guild(c->guild_id))
 						if (auto r = g->roles.find(sf_parse(id)); r != g->roles.end())
 							name = r->second.name;
+					int64_t cnt = jint(grp, "count");
+					auto gc = g_group_counts.find(c->guild_id);
+					if (gc != g_group_counts.end())
+						if (auto n = gc->second.find(id); n != gc->second.end())
+							cnt = n->second;
 					add_label("<span size='small' weight='bold' foreground='#949ba4'>" + esc(name) + " — " +
-						  std::to_string(jint(grp, "count")) + "</span>", 0, 0);
+						  std::to_string(cnt) + "</span>", 0, 0);
 				} else if (const json &m = jget(item, "member"); m.is_object()) {
 					Snowflake uid = jsf(jget(m, "user"), "id");
 					std::string status = jstr(jget(m, "presence"), "status", "offline");
@@ -1159,6 +1165,7 @@ void ui_member_list_show(Snowflake gid, Snowflake cid)
 		g_member_guild = gid;
 		g_member_channel = cid;
 		g_member_items.erase(gid);
+		g_group_counts.erase(gid);
 		app_request_member_list(gid, cid);
 	}
 	schedule_member_render();
@@ -1503,6 +1510,9 @@ void ui_incoming_call(Snowflake cid, bool ringing)
 void ui_member_list_update(Snowflake gid, const json &d)
 {
 	auto &items = g_member_items[gid];
+	if (const json &groups = jget(d, "groups"); groups.is_array())
+		for (auto &gr : groups)
+			g_group_counts[gid][jstr(gr, "id")] = jint(gr, "count");
 	for (auto &op : jget(d, "ops")) {
 		std::string o = jstr(op, "op");
 		if (o == "SYNC") {
