@@ -655,7 +655,9 @@ void render_member_list()
 	} else if (c) {
 		auto it = g_member_items.find(c->guild_id);
 		if (it != g_member_items.end()) {
-			for (auto &item : it->second) {
+			const auto &list = it->second;
+			for (size_t li = 0; li < list.size(); li++) {
+				const json &item = list[li];
 				if (const json &grp = jget(item, "group"); grp.is_object()) {
 					std::string id = jstr(grp, "id");
 					std::string name = id == "online" ? "Online" : id == "offline" ? "Offline" : id;
@@ -667,6 +669,9 @@ void render_member_list()
 					if (gc != g_group_counts.end())
 						if (auto n = gc->second.find(id); n != gc->second.end())
 							cnt = n->second;
+					if (cnt <= 0)	// fall back to counting the loaded members under this heading
+						for (size_t k = li + 1; k < list.size() && !list[k].contains("group"); k++)
+							cnt++;
 					add_label("<span size='small' weight='bold' foreground='#949ba4'>" + esc(name) + " — " +
 						  std::to_string(cnt) + "</span>", 0, 0);
 				} else if (const json &m = jget(item, "member"); m.is_object()) {

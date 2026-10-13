@@ -1730,8 +1730,24 @@ void ChatView::Impl::update_attach_box()
 			MediaPtr m;
 			if (!f.path.empty())
 				m = media_get_file(f.path, o);
-			if (m)
+			if (m) {
 				gtk_box_pack_start(GTK_BOX(chip), media_widget(m, S(48), S(48)), FALSE, FALSE, 0);
+			} else if (!f.data.empty()) {
+				GdkPixbufLoader *ld = gdk_pixbuf_loader_new();
+				if (gdk_pixbuf_loader_write(ld, (const guchar *)f.data.data(), f.data.size(), nullptr) &&
+				    gdk_pixbuf_loader_close(ld, nullptr)) {
+					if (GdkPixbuf *pb = gdk_pixbuf_loader_get_pixbuf(ld)) {
+						int w = gdk_pixbuf_get_width(pb), h = gdk_pixbuf_get_height(pb), mx = S(120);
+						double k = std::min(1.0, (double)mx / std::max(w, h));
+						GdkPixbuf *sc = gdk_pixbuf_scale_simple(pb, std::max(1, (int)(w * k)), std::max(1, (int)(h * k)),
+											GDK_INTERP_BILINEAR);
+						GtkWidget *img = gtk_image_new_from_pixbuf(sc);
+						g_object_unref(sc);
+						gtk_box_pack_start(GTK_BOX(chip), img, FALSE, FALSE, 0);
+					}
+				}
+				g_object_unref(ld);
+			}
 		}
 		std::string label = f.filename + (f.spoiler ? " (spoiler)" : "");
 		GtkWidget *l = gtk_label_new(label.c_str());
