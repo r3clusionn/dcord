@@ -1777,8 +1777,8 @@ void ChatView::Impl::update_attach_box()
 		}), this);
 		gtk_box_pack_start(GTK_BOX(chip), x, FALSE, FALSE, 0);
 		gtk_box_pack_start(GTK_BOX(attach_box), chip, FALSE, FALSE, 0);
+		gtk_widget_show_all(chip);
 	}
-	gtk_widget_show_all(attach_box);
 	gtk_widget_show(attach_box);
 }
 
