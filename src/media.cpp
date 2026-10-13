@@ -75,8 +75,14 @@ struct Decoder {
 	bool eof_sent = false;
 	int64_t last_pts = AV_NOPTS_VALUE;
 	int frames = 0;
+	uint8_t *tmp = nullptr;  // padded swscale output
+	size_t tmp_size = 0;
 
-	~Decoder() { close(); }
+	~Decoder()
+	{
+		close();
+		av_free(tmp);
+	}
 
 	void close()
 	{
@@ -230,12 +236,23 @@ struct Decoder {
 			sws = sws_getContext(src_w, src_h, (AVPixelFormat)src_fmt, out_w, out_h, AV_PIX_FMT_BGRA,
 					     sc < 1.0 ? SWS_AREA : SWS_BILINEAR, nullptr, nullptr, nullptr);
 		}
-		cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, out_w, out_h);
-		uint8_t *dst[4] = {cairo_image_surface_get_data(s), nullptr, nullptr, nullptr};
-		int dst_stride[4] = {cairo_image_surface_get_stride(s), 0, 0, 0};
+		// swscale's SIMD paths may write past the end of a row, so scale into a padded buffer and
+		// copy; writing straight into cairo's exactly-sized surface corrupted the heap (MP4 GIFs).
+		int tstride = FFALIGN(out_w * 4, 64);
+		size_t need = (size_t)tstride * (out_h + 2) + 64;
+		if (tmp_size < need) {
+			av_free(tmp);
+			tmp = (uint8_t *)av_malloc(need);
+			tmp_size = need;
+		}
+		uint8_t *dst[4] = {tmp, nullptr, nullptr, nullptr};
+		int dst_stride[4] = {tstride, 0, 0, 0};
 		sws_scale(sws, frame->data, frame->linesize, 0, src_h, dst, dst_stride);
-		uint8_t *px = dst[0];
-		int stride = dst_stride[0];
+		cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, out_w, out_h);
+		uint8_t *px = cairo_image_surface_get_data(s);
+		int stride = cairo_image_surface_get_stride(s);
+		for (int y = 0; y < out_h; y++)
+			memcpy(px + (size_t)y * stride, tmp + (size_t)y * tstride, (size_t)out_w * 4);
 		if (has_alpha) {
 			// Cairo wants premultiplied alpha.
 			for (int y = 0; y < out_h; y++) {
@@ -717,7 +734,9 @@ gboolean mw_press(GtkWidget *wd, GdkEventButton *ev, gpointer p)
 		return TRUE;
 	}
 	if (mw->on_click) {
-		mw->on_click((int)ev->button);
+		// Copy: the handler may destroy this widget (and mw with it).
+		auto f = mw->on_click;
+		f((int)ev->button);
 		return TRUE;
 	}
 	return FALSE;

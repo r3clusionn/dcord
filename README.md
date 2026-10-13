@@ -21,13 +21,13 @@ A lightweight Discord client for Linux in the spirit of Ripcord: one dense windo
   - send files with the + button, by pasting (Ctrl+V of an image or of copied files) or by dropping them on the chat, optionally marked as spoilers;
   - a GIF picker searches Tenor through Discord, and an emoji picker covers your servers' emoji.
 - **Voice:**
-  - double-click a voice channel to join it, or start a DM call from a DM's menu;
+  - double-click a voice channel to join it, or start a DM call with the Call button in the DM's header (it rings the other side);
   - end-to-end encrypted with DAVE (Discord's protocol, through its own libdave);
   - voice activity with an adjustable threshold, or push-to-talk on any key, which works while another window has focus;
   - mute and deafen;
   - per-user volume (right-click someone in the voice channel);
   - speaking indicators in the tree, and the ping shown in the voice panel.
-- **Small things Ripcord users expect:** Ctrl+K quick switcher, middle-click a channel for a new tab, Up to edit your last message, the window and tabs restored on start, and the X urgency hint (so dwm marks the tag) on DMs and mentions.
+- **Small things Ripcord users expect:** Ctrl+K quick switcher, typing anywhere goes to the message box, `@` suggests people to mention, middle-click a channel for a new tab, Up to edit your last message, the window and tabs restored on start, and the X urgency hint (so dwm marks the tag) on DMs and mentions.
 
 ## How to install
 
@@ -57,8 +57,9 @@ Start `dcord` and log in; the token is kept in `~/.config/dcord/token` (mode 600
 | Member list on/off | Ctrl+M |
 | Mute | Ctrl+Shift+M or the Mic button |
 | Reply, edit, delete, react, copy | Right-click a message |
+| Mention someone | Type `@` and part of the name, then Tab or Enter (Up/Down to choose) |
 | Edit your last message | Up in the empty message box |
-| Cancel reply or edit | Esc |
+| Cancel reply or edit, close Settings | Esc |
 | New line in a message | Shift+Enter |
 | Reveal a spoiler | Click it |
 

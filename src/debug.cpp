@@ -28,6 +28,8 @@ static void run_line(const std::string &line)
 		voice_leave();
 	} else if (cmd == "settings") {
 		settings_dialog_show();
+	} else if (cmd == "view") {
+		image_viewer_show(arg, 0, 0, arg);
 	} else if (cmd == "switcher") {
 		quick_switcher_show();
 	} else if (cmd == "expand") {

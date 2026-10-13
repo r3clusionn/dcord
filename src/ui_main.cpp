@@ -865,6 +865,15 @@ gboolean on_key(GtkWidget *, GdkEventKey *ev, gpointer)
 		voice_set_mute(!voice_self_mute());
 		return TRUE;
 	}
+	// Typing anywhere outside a text field goes to the message box, like Discord.
+	GtkWidget *f = gtk_window_get_focus(GTK_WINDOW(g_ui.window));
+	bool text_focus = f && (GTK_IS_EDITABLE(f) || (GTK_IS_TEXT_VIEW(f) && gtk_text_view_get_editable(GTK_TEXT_VIEW(f))));
+	bool plain = !(ev->state & (GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_SUPER_MASK));
+	if (!text_focus && plain && (gdk_keyval_to_unicode(ev->keyval) >= 0x20 || ev->keyval == GDK_KEY_BackSpace))
+		if (ChatView *v = ui_current_view()) {
+			v->focus_composer();
+			return gtk_window_propagate_key_event(GTK_WINDOW(g_ui.window), ev);
+		}
 	return FALSE;
 }
 

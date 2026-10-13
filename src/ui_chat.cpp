@@ -13,6 +13,7 @@
 struct ChatView::Impl {
 	ChatView *self;
 	GtkWidget *header_title, *header_topic, *header_box;
+	GtkWidget *call_btn;    // DMs only
 	GtkWidget *scroll;
 	GtkTextView *view;
 	GtkTextBuffer *buf;
@@ -50,6 +51,15 @@ struct ChatView::Impl {
 	bool uploading = false;
 	guint ack_timer = 0;
 	std::shared_ptr<bool> alive = std::make_shared<bool>(true);
+
+	// @mention autocomplete
+	GtkWidget *mention_pop = nullptr, *mention_list = nullptr;
+	std::vector<Snowflake> mention_ids;                    // rows shown
+	std::vector<std::pair<std::string, Snowflake>> mentions;  // "@name" inserted -> user
+	void mention_update();
+	bool mention_query(GtkTextIter *at);  // finds "@query" before the cursor
+	void mention_pick(int row);
+	std::string apply_mentions(std::string text);
 
 	// rendering
 	void build();
@@ -188,6 +198,20 @@ void ChatView::Impl::build()
 	gtk_style_context_add_class(gtk_widget_get_style_context(header_topic), "dim-label");
 	gtk_box_pack_start(GTK_BOX(header_box), header_title, FALSE, FALSE, 0);
 	gtk_box_pack_start(GTK_BOX(header_box), header_topic, TRUE, TRUE, 0);
+	call_btn = gtk_button_new_with_label("📞 Call");
+	gtk_button_set_relief(GTK_BUTTON(call_btn), GTK_RELIEF_NONE);
+	gtk_widget_set_tooltip_text(call_btn, "Start or join a voice call");
+	gtk_widget_set_no_show_all(call_btn, TRUE);
+	g_signal_connect(call_btn, "clicked", CB(+[](GtkButton *, gpointer p) {
+		Snowflake cid = static_cast<Impl *>(p)->self->cid_;
+		app_voice_join(0, cid);
+		// Ring once our voice state has made the call exist.
+		g_timeout_add(1200, [](gpointer c) -> gboolean {
+			api_ring((Snowflake)(uintptr_t)c);
+			return G_SOURCE_REMOVE;
+		}, (gpointer)(uintptr_t)cid);
+	}), this);
+	gtk_box_pack_start(GTK_BOX(header_box), call_btn, FALSE, FALSE, 0);
 	GtkWidget *pins = gtk_button_new_with_label("Pins");
 	gtk_button_set_relief(GTK_BUTTON(pins), GTK_RELIEF_NONE);
 	gtk_widget_set_tooltip_text(pins, "Show pinned messages");
@@ -486,6 +510,26 @@ void ChatView::Impl::build()
 	g_signal_connect(composer, "key-press-event", CB(+[](GtkWidget *, GdkEventKey *ev, gpointer p) -> gboolean {
 		Impl *d = static_cast<Impl *>(p);
 		bool shift = ev->state & GDK_SHIFT_MASK, ctrl = ev->state & GDK_CONTROL_MASK;
+		if (d->mention_pop && gtk_widget_get_visible(d->mention_pop) && !d->mention_ids.empty()) {
+			GtkListBox *lb = GTK_LIST_BOX(d->mention_list);
+			GtkListBoxRow *r = gtk_list_box_get_selected_row(lb);
+			int i = r ? gtk_list_box_row_get_index(r) : 0, n = (int)d->mention_ids.size();
+			switch (ev->keyval) {
+			case GDK_KEY_Up:
+			case GDK_KEY_Down:
+				i = (i + (ev->keyval == GDK_KEY_Up ? n - 1 : 1)) % n;
+				gtk_list_box_select_row(lb, gtk_list_box_get_row_at_index(lb, i));
+				return TRUE;
+			case GDK_KEY_Tab:
+			case GDK_KEY_Return:
+			case GDK_KEY_KP_Enter:
+				d->mention_pick(i);
+				return TRUE;
+			case GDK_KEY_Escape:
+				gtk_widget_hide(d->mention_pop);
+				return TRUE;
+			}
+		}
 		if ((ev->keyval == GDK_KEY_Return || ev->keyval == GDK_KEY_KP_Enter) && !shift) {
 			d->send();
 			return TRUE;
@@ -542,6 +586,7 @@ void ChatView::Impl::build()
 		return FALSE;
 	}), this);
 	g_signal_connect(gtk_text_view_get_buffer(composer), "changed", CB(+[](GtkTextBuffer *b, gpointer p) {
+		static_cast<Impl *>(p)->mention_update();
 		if (gtk_text_buffer_get_char_count(b) > 0)
 			static_cast<Impl *>(p)->sent_typing();
 	}), this);
@@ -570,6 +615,7 @@ void ChatView::Impl::build()
 			std::string nonce = sf_str(sf_from_unix_ms(now_ms()));
 			api_send_message(d->self->cid_, url, nonce, d->reply_to, d->reply_mention, {}, nullptr);
 			d->cancel_reply_edit();
+			d->self->focus_composer();
 		});
 	}), this);
 	gtk_box_pack_start(GTK_BOX(row), gif, FALSE, FALSE, 0);
@@ -1336,13 +1382,175 @@ void ChatView::Impl::sent_typing()
 	api_typing(self->cid_);
 }
 
+// --- @mention autocomplete ---------------------------------------------------------------
+
+static std::string lower(std::string s)
+{
+	for (char &c : s)
+		c = (char)tolower((unsigned char)c);
+	return s;
+}
+
+bool ChatView::Impl::mention_query(GtkTextIter *at)
+{
+	GtkTextBuffer *b = gtk_text_view_get_buffer(composer);
+	GtkTextIter cur;
+	gtk_text_buffer_get_iter_at_mark(b, &cur, gtk_text_buffer_get_insert(b));
+	GtkTextIter it = cur;
+	for (int n = 0; n < 40 && gtk_text_iter_backward_char(&it); n++) {
+		gunichar c = gtk_text_iter_get_char(&it);
+		if (g_unichar_isspace(c))
+			return false;
+		if (c == '@') {
+			GtkTextIter prev = it;
+			if (gtk_text_iter_backward_char(&prev) && !g_unichar_isspace(gtk_text_iter_get_char(&prev)))
+				return false;  // an email address, not a mention
+			*at = it;
+			return true;
+		}
+	}
+	return false;
+}
+
+void ChatView::Impl::mention_update()
+{
+	GtkTextIter at;
+	if (!mention_query(&at)) {
+		if (mention_pop)
+			gtk_widget_hide(mention_pop);
+		return;
+	}
+	GtkTextBuffer *b = gtk_text_view_get_buffer(composer);
+	GtkTextIter cur, q = at;
+	gtk_text_buffer_get_iter_at_mark(b, &cur, gtk_text_buffer_get_insert(b));
+	gtk_text_iter_forward_char(&q);
+	gchar *qs = gtk_text_buffer_get_text(b, &q, &cur, FALSE);
+	std::string query = lower(qs);
+	g_free(qs);
+
+	// Everyone we know in this channel: guild members seen, DM recipients, recent authors.
+	std::vector<Snowflake> ids;
+	std::set<Snowflake> seen;
+	auto add = [&](Snowflake id) {
+		if (id && id != g_store.me.id && seen.insert(id).second)
+			ids.push_back(id);
+	};
+	if (auto it = g_store.messages.find(self->cid_); it != g_store.messages.end())
+		for (auto m = it->second.msgs.rbegin(); m != it->second.msgs.rend(); ++m)
+			add((*m)->author_id);
+	if (const Channel *ch = g_store.channel(self->cid_))
+		for (Snowflake r : ch->recipients)
+			add(r);
+	if (Guild *g = g_store.guild(self->gid_))
+		for (auto &[uid, mem] : g->members)
+			add(uid);
+
+	std::vector<std::pair<int, Snowflake>> hits;  // score (lower is better), user
+	for (size_t i = 0; i < ids.size(); i++) {
+		const User *u = g_store.user(ids[i]);
+		if (!u)
+			continue;
+		int best = 99;
+		for (const std::string &name : {u->username, u->global_name, g_store.display_name(self->gid_, ids[i])}) {
+			std::string l = lower(name);
+			size_t pos = l.find(query);
+			if (!name.empty() && pos != std::string::npos)
+				best = std::min(best, pos == 0 ? 0 : 1);
+		}
+		if (best < 99)
+			hits.push_back({best * 100000 + (int)i, ids[i]});  // recent talkers first
+	}
+	std::sort(hits.begin(), hits.end());
+	if (hits.size() > 10)
+		hits.resize(10);
+	if (hits.empty()) {
+		if (mention_pop)
+			gtk_widget_hide(mention_pop);
+		return;
+	}
+
+	if (!mention_pop) {
+		mention_pop = gtk_popover_new(GTK_WIDGET(composer));
+		gtk_popover_set_modal(GTK_POPOVER(mention_pop), FALSE);  // keep typing in the composer
+		gtk_popover_set_position(GTK_POPOVER(mention_pop), GTK_POS_TOP);
+		mention_list = gtk_list_box_new();
+		gtk_list_box_set_selection_mode(GTK_LIST_BOX(mention_list), GTK_SELECTION_BROWSE);
+		gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(mention_list), TRUE);
+		gtk_widget_set_can_focus(mention_list, FALSE);
+		g_signal_connect(mention_list, "row-activated", CB(+[](GtkListBox *, GtkListBoxRow *r, gpointer p) {
+			static_cast<Impl *>(p)->mention_pick(gtk_list_box_row_get_index(r));
+		}), this);
+		gtk_container_add(GTK_CONTAINER(mention_pop), mention_list);
+	}
+	gtk_container_foreach(GTK_CONTAINER(mention_list), [](GtkWidget *w, gpointer) { gtk_widget_destroy(w); }, nullptr);
+	mention_ids.clear();
+	for (auto &[score, id] : hits) {
+		const User *u = g_store.user(id);
+		std::string m = "<b>" + markup_escape(g_store.display_name(self->gid_, id)) + "</b>  <span alpha=\"60%\">" +
+				markup_escape(u->username) + "</span>";
+		GtkWidget *l = gtk_label_new(nullptr);
+		gtk_label_set_markup(GTK_LABEL(l), m.c_str());
+		gtk_label_set_xalign(GTK_LABEL(l), 0);
+		g_object_set(l, "margin", S(4), nullptr);
+		gtk_list_box_insert(GTK_LIST_BOX(mention_list), l, -1);
+		mention_ids.push_back(id);
+	}
+	gtk_list_box_select_row(GTK_LIST_BOX(mention_list), gtk_list_box_get_row_at_index(GTK_LIST_BOX(mention_list), 0));
+	// Point at the "@".
+	GdkRectangle r;
+	gtk_text_view_get_iter_location(composer, &at, &r);
+	gtk_text_view_buffer_to_window_coords(composer, GTK_TEXT_WINDOW_WIDGET, r.x, r.y, &r.x, &r.y);
+	gtk_popover_set_pointing_to(GTK_POPOVER(mention_pop), &r);
+	gtk_widget_show_all(mention_pop);
+}
+
+void ChatView::Impl::mention_pick(int row)
+{
+	if (row < 0 || row >= (int)mention_ids.size())
+		return;
+	Snowflake id = mention_ids[row];
+	const User *u = g_store.user(id);
+	GtkTextIter at;
+	if (!u || !mention_query(&at))
+		return;
+	GtkTextBuffer *b = gtk_text_view_get_buffer(composer);
+	GtkTextIter cur;
+	gtk_text_buffer_get_iter_at_mark(b, &cur, gtk_text_buffer_get_insert(b));
+	std::string name = "@" + u->username;
+	gtk_text_buffer_delete(b, &at, &cur);
+	gtk_text_buffer_insert(b, &at, (name + " ").c_str(), -1);
+	mentions.push_back({name, id});
+	gtk_widget_hide(mention_pop);
+	gtk_widget_grab_focus(GTK_WIDGET(composer));
+}
+
+// Turns the "@username" picked from the popup into real <@id> mentions.
+std::string ChatView::Impl::apply_mentions(std::string text)
+{
+	for (auto &[name, id] : mentions) {
+		std::string tag = "<@" + sf_str(id) + ">";
+		size_t p = 0;
+		while ((p = text.find(name, p)) != std::string::npos) {
+			size_t e = p + name.size();
+			if (e < text.size() && (isalnum((unsigned char)text[e]) || text[e] == '_' || text[e] == '.')) {
+				p = e;  // a longer name that starts the same
+				continue;
+			}
+			text.replace(p, name.size(), tag);
+			p += tag.size();
+		}
+	}
+	mentions.clear();
+	return text;
+}
+
 void ChatView::Impl::send()
 {
 	GtkTextBuffer *b = gtk_text_view_get_buffer(composer);
 	GtkTextIter s, e;
 	gtk_text_buffer_get_bounds(b, &s, &e);
 	gchar *txt = gtk_text_buffer_get_text(b, &s, &e, FALSE);
-	std::string text = trim(txt);
+	std::string text = apply_mentions(trim(txt));
 	g_free(txt);
 	Snowflake cid = self->cid_;
 	if (editing) {
@@ -1591,6 +1799,7 @@ void ChatView::Impl::update_header()
 			ch = ' ';
 	gtk_label_set_text(GTK_LABEL(header_topic), topic.c_str());
 	gtk_widget_set_tooltip_text(header_topic, c->topic.c_str());
+	gtk_widget_set_visible(call_btn, c->is_private());
 }
 
 void ChatView::Impl::update_permissions()
@@ -1930,11 +2139,26 @@ void ChatView::on_shown()
 	if (it != g_store.messages.end())
 		it->second.last_access = now_ms();
 	maybe_ack();
+	focus_composer();
 }
 
 void ChatView::focus_composer()
 {
 	gtk_widget_grab_focus(GTK_WIDGET(d->composer));
+	// Again once the click that got us here (channel tree, tab, menu) has finished taking focus.
+	GWeakRef *ref = g_new0(GWeakRef, 1);
+	g_weak_ref_init(ref, d->composer);
+	g_idle_add([](gpointer p) -> gboolean {
+		GWeakRef *ref = (GWeakRef *)p;
+		if (GtkWidget *w = (GtkWidget *)g_weak_ref_get(ref)) {
+			if (gtk_widget_get_mapped(w))
+				gtk_widget_grab_focus(w);
+			g_object_unref(w);
+		}
+		g_weak_ref_clear(ref);
+		g_free(ref);
+		return G_SOURCE_REMOVE;
+	}, ref);
 }
 
 static std::string guess_type(const std::string &path)
@@ -1972,6 +2196,12 @@ void ChatView::debug_command(const std::string &cmd, const std::string &arg)
 {
 	if (cmd == "send") {
 		gtk_text_buffer_set_text(gtk_text_view_get_buffer(d->composer), arg.c_str(), -1);
+		d->send();
+	} else if (cmd == "type") {
+		gtk_text_buffer_insert_at_cursor(gtk_text_view_get_buffer(d->composer), arg.c_str(), -1);
+	} else if (cmd == "mention") {
+		d->mention_pick(atoi(arg.c_str()));
+	} else if (cmd == "enter") {
 		d->send();
 	} else if (cmd == "attach") {
 		attach_file(arg);

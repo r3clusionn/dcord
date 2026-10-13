@@ -164,7 +164,7 @@ void gif_picker_show(GtkWidget *rel, std::function<void(const std::string &)> on
 	GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, S(4));
 	g_object_set(box, "margin", S(6), nullptr);
 	gp->entry = gtk_search_entry_new();
-	gtk_entry_set_placeholder_text(GTK_ENTRY(gp->entry), "Search Tenor");
+	gtk_entry_set_placeholder_text(GTK_ENTRY(gp->entry), "Search GIFs");
 	gtk_box_pack_start(GTK_BOX(box), gp->entry, FALSE, FALSE, 0);
 	GtkWidget *sw = gtk_scrolled_window_new(nullptr, nullptr);
 	gtk_widget_set_size_request(sw, S(500), S(420));
@@ -406,6 +406,25 @@ void settings_dialog_show()
 		gtk_label_set_xalign(GTK_LABEL(l), 0);
 		gtk_box_pack_start(GTK_BOX(box), l, FALSE, FALSE, S(4));
 	};
+	// Title row with a close button (tiling WMs draw no title bar).
+	GtkWidget *top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	GtkWidget *title = gtk_label_new(nullptr);
+	gtk_label_set_markup(GTK_LABEL(title), "<big><b>Settings</b></big>");
+	gtk_box_pack_start(GTK_BOX(top), title, FALSE, FALSE, 0);
+	GtkWidget *x = gtk_button_new_from_icon_name("window-close-symbolic", GTK_ICON_SIZE_BUTTON);
+	gtk_button_set_relief(GTK_BUTTON(x), GTK_RELIEF_NONE);
+	gtk_widget_set_tooltip_text(x, "Close (Esc)");
+	g_signal_connect_swapped(x, "clicked", G_CALLBACK(gtk_widget_destroy), win);
+	gtk_box_pack_end(GTK_BOX(top), x, FALSE, FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(box), top, FALSE, FALSE, 0);
+	g_signal_connect_after(win, "key-press-event", CB(+[](GtkWidget *w, GdkEventKey *ev, gpointer) -> gboolean {
+		if (ev->keyval == GDK_KEY_Escape) {
+			gtk_widget_destroy(w);
+			return TRUE;
+		}
+		return FALSE;
+	}), nullptr);
+	// (after: the push-to-talk key button sees Esc first)
 	heading("Chat");
 	gtk_box_pack_start(GTK_BOX(box), check("Play GIFs and animated emoji", &g_settings.animate_gifs, []() {
 		g_media_animate = g_settings.animate_gifs;
